@@ -24,7 +24,9 @@ meta = json.load(open(os.path.join(d, "job.json"), encoding="utf-8"))
 res = {"ok": ok, "job": job, "rooms": meta.get("rooms"), "dry": meta.get("dry", False),
        "finished": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
 if not ok:
-    res["error"] = lines[-1] if lines else "post.sh failed"
+    # post.sh's own progress lines start with a date; the reason is the last line that does not.
+    reasons = [l for l in lines if not l[:4].isdigit()]
+    res["error"] = (reasons or lines or ["post.sh failed"])[-1]
 with open(os.path.join(d, "result.json"), "w", encoding="utf-8") as fh:
     json.dump(res, fh, ensure_ascii=False)
 EOF

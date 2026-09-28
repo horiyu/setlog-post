@@ -101,8 +101,9 @@ sleep 5
 adb shell input tap $TAP_RECORD
 # The countdown (3 or 5 s, whatever the timer button is set to) then the clip: wait
 # for the send screen, recognisable by the green disc of the send arrow (its centre is the black arrow itself).
+# It can take a while on a busy PC; until then the arrow is drawn half-transparent.
 sent_screen=0
-for _ in $(seq 1 30); do
+for _ in $(seq 1 90); do
   sleep 1
   if adb exec-out screencap -p | "$SETLOG_PYTHON" -c '
 import sys,io
