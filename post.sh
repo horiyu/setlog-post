@@ -32,11 +32,13 @@ lead=$(field lead); lead=${lead:-${LEAD:-5}}
 # any other size is fitted inside it (long edge) on a dark ground. The emulator starts
 # playing when setlog opens the camera and the shutter is pressed about 5 s later, so
 # the first frame is held for `lead` seconds and the Log begins at the video's first
-# frame; setlog keeps a little over 2 s. setlog may open the front camera, which
+# frame; setlog keeps a little over 2 s. The last frame is held for 10 s too: the
+# emulator's camera fails ("camera capture failed") once the file has run out, which
+# a short video would do before the tap. setlog may open the front camera, which
 # mirrors: keep a pre-flipped copy for it.
 ffmpeg -y -loglevel error -nostdin -t 20 -i "$video" -an -vf "setpts=PTS-STARTPTS,fps=30,\
 scale=1710:962:force_original_aspect_ratio=decrease:flags=lanczos,pad=1710:962:(ow-iw)/2:(oh-ih)/2:color=0x0e0e10,setsar=1,\
-tpad=start_duration=${lead}:start_mode=clone,pad=1710:1280:0:0:color=0x0e0e10,format=yuv420p" \
+tpad=start_duration=${lead}:start_mode=clone:stop_duration=10:stop_mode=clone,pad=1710:1280:0:0:color=0x0e0e10,format=yuv420p" \
   -c:v libx264 -preset medium -crf 16 -g 15 state/card.next.mp4
 mv -f state/card.next.mp4 state/card.mp4
 ffmpeg -y -loglevel error -nostdin -i state/card.mp4 -vf hflip -c:v libx264 -preset medium -crf 16 -g 15 state/card_front.next.mp4
