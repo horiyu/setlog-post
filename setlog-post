@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""setlog-post: post a video to your own setlog through an Android emulator's camera.
+
+Other programs on this PC call this; it owns the emulator, so their posts go out one
+at a time. Every command prints one line of JSON.
+
+  setlog-post post <video> [--room NAME]... [--caption TEXT] [--dry] [--lead SEC]
+                           [--from CLIENT] [--move] [--wait [--timeout SEC]]
+        queue a post and start the worker. Prints {"ok": true, "job": ID}; with --wait,
+        blocks and prints the result instead (exit status 0 = posted).
+        --room may repeat or hold several names separated by commas (default: DEFAULT_ROOM).
+        --dry stops at setlog's send screen and cancels. --move takes the file instead of copying it.
+  setlog-post status <job>          {"state": "queued" | "running" | "done", ...result}
+  setlog-post wait <job> [--timeout SEC]
+  setlog-post rooms                 {"default": ..., "rooms": [...]}  (rooms/<name>.png)
+  setlog-post info                  the frame a video should have to fill setlog's picture
+
+The video: 1710x962 (setlog's 16:9 band of the camera frame) fills the Log exactly; any
+other size is fitted inside it. The Log starts at the video's first frame and setlog
+keeps a little over 2 s of it.
+"""
+import datetime, json, os, secrets, shutil, subprocess, sys, time
+
+HOME = os.path.dirname(os.path.realpath(__file__))
+QUEUE, DONE, STATE = (os.path.join(HOME, d) for d in ("queue", "done", "state"))
+VIDEO_EXT = (".mp4", ".mov", ".m4v", ".webm", ".mkv")
+
+
+def conf():
+    out = {}
+    path = os.path.join(HOME, "settings.conf")
+    if not os.path.exists(path):
+        shutil.copyfile(path + ".example", path)
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.split("#", 1)[0].strip()
+            if "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"')
+    return out
+
+
+def say(obj, code=0):
+    print(json.dumps(obj, ensure_ascii=False))
+    return code
+
+
+def rooms():
+    default = conf().get("DEFAULT_ROOM", "vlog") or "vlog"
+    d = os.path.join(HOME, "rooms")
+    names = sorted(f[:-4] for f in os.listdir(d) if f.endswith(".png")) if os.path.isdir(d) else []
+    return default, [default] * (default in names) + [n for n in names if n != default]
+
+
+def args_of(argv, flags, options):
+    """Tiny parser: flags are booleans, options take a value (and may repeat)."""
+    pos, got = [], {}
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a in flags:
+            got[a] = True
+        elif a in options:
+            if i + 1 >= len(argv):
+                raise SystemExit(say({"ok": False, "error": f"{a} needs a value"}, 2))
+            got.setdefault(a, []).append(argv[i + 1])
+            i += 1
+        elif a.startswith("--"):
+            raise SystemExit(say({"ok": False, "error": f"unknown option {a}"}, 2))
+        else:
+            pos.append(a)
+        i += 1
+    return pos, got
+
+
+def start_worker():
+    subprocess.Popen(["setsid", os.path.join(HOME, "worker.sh")], cwd=HOME, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+
+
+def status(job):
+    if not job or "/" in job or job.startswith("."):
+        return {"ok": False, "error": "bad job id"}
+    res = os.path.join(DONE, job, "result.json")
+    if os.path.exists(res):
+        with open(res, encoding="utf-8") as fh:
+            return {"state": "done", **json.load(fh)}
+    if os.path.isdir(os.path.join(QUEUE, job)):
+        try:
+            with open(os.path.join(STATE, "current"), encoding="utf-8") as fh:
+                running = fh.read().strip() == job
+        except FileNotFoundError:
+            running = False
+        ahead = sum(1 for j in os.listdir(QUEUE) if j < job)
+        return {"ok": True, "job": job, "state": "running" if running else "queued", "ahead": ahead}
+    return {"ok": False, "job": job, "error": "no such job"}
+
+
+def wait(job, timeout):
+    end = time.time() + timeout
+    while True:
+        s = status(job)
+        if s.get("state") == "done" or s.get("error") == "no such job":
+            return say(s, 0 if s.get("ok") else 1)
+        if time.time() > end:
+            return say({**s, "ok": False, "error": f"still {s.get('state')} after {timeout:g}s"}, 1)
+        time.sleep(3)
+
+
+def post(argv):
+    pos, a = args_of(argv, {"--dry", "--move", "--wait"},
+                     {"--room", "--caption", "--lead", "--from", "--timeout"})
+    if len(pos) != 1:
+        return say({"ok": False, "error": "usage: setlog-post post <video> [--room NAME] [--caption TEXT] ..."}, 2)
+    src = pos[0]
+    if not os.path.isfile(src) or os.path.getsize(src) < 1000:
+        return say({"ok": False, "error": f"no video at {src}"}, 2)
+    ext = os.path.splitext(src)[1].lower()
+    ext = ext if ext in VIDEO_EXT else ".mp4"
+    default, known = rooms()
+    wanted = [r.strip() for v in a.get("--room", []) for r in v.replace("\n", ",").split(",") if r.strip()]
+    wanted = wanted or [default]
+    missing = [r for r in wanted if r not in known]
+    if missing:
+        return say({"ok": False, "error": f"unknown room(s): {', '.join(missing)} "
+                                          f"(add rooms/<name>.png with bin/add-rooms.sh)", "rooms": known}, 2)
+    lead = None
+    if "--lead" in a:
+        try:
+            lead = float(a["--lead"][-1])
+            assert 0 <= lead <= 15
+        except (ValueError, AssertionError):
+            return say({"ok": False, "error": "--lead must be 0..15 seconds"}, 2)
+    os.makedirs(QUEUE, exist_ok=True)
+    job = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+    tmp = os.path.join(QUEUE, "." + job)          # the worker skips dot-names until complete
+    os.makedirs(tmp)
+    (shutil.move if "--move" in a else shutil.copyfile)(src, os.path.join(tmp, "video" + ext))
+    meta = {"caption": (a.get("--caption") or [""])[-1].strip(), "rooms": wanted, "dry": "--dry" in a,
+            "from": (a.get("--from") or [""])[-1],
+            "queued": datetime.datetime.now().astimezone().isoformat(timespec="seconds")}
+    if lead is not None:
+        meta["lead"] = lead
+    with open(os.path.join(tmp, "job.json"), "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, ensure_ascii=False, indent=1)
+    os.rename(tmp, os.path.join(QUEUE, job))
+    start_worker()
+    if "--wait" in a:
+        return wait(job, float((a.get("--timeout") or ["1800"])[-1]))
+    return say({"ok": True, "job": job, "rooms": wanted, "dry": meta["dry"]})
+
+
+def main(argv):
+    cmd, rest = (argv[0], argv[1:]) if argv else ("", [])
+    if cmd == "post":
+        return post(rest)
+    if cmd == "status" and len(rest) == 1:
+        s = status(rest[0])
+        return say(s, 0 if s.get("ok", True) else 1)
+    if cmd == "wait" and rest:
+        pos, a = args_of(rest, set(), {"--timeout"})
+        return wait(pos[0], float((a.get("--timeout") or ["1800"])[-1]))
+    if cmd == "rooms":
+        default, names = rooms()
+        return say({"ok": True, "default": default, "rooms": names})
+    if cmd == "info":
+        return say({"ok": True, "width": 1710, "height": 962, "fps": 30, "kept_seconds": 2.2,
+                    "lead": float(conf().get("LEAD", 5) or 5)})
+    print(__doc__.strip(), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
