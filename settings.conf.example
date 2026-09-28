@@ -1,0 +1,8 @@
+# setlog-post settings. Copied to settings.conf on first run: edit that copy.
+AVD=me                     # the emulator signed in to your own setlog account (bin/make-avd.sh me)
+DEFAULT_ROOM=vlog          # room to send to when a post names none (name as shown on the send screen)
+LEAD=5                     # seconds the first frame is held while setlog opens the camera
+DISPLAY_ID=                # X display for the emulator window and the clipboard (empty = $DISPLAY, else :0)
+# Other programs on this PC that drive an emulator themselves and hold a lock file while
+# they do. Posting waits for each of them. Space-separated paths; leave empty if none.
+EXTRA_LOCKS=
