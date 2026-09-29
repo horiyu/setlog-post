@@ -132,7 +132,8 @@ def post(argv):
         except (ValueError, AssertionError):
             return say({"ok": False, "error": "--lead must be 0..15 seconds"}, 2)
     os.makedirs(QUEUE, exist_ok=True)
-    job = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(2)
+    # sorts in the order posts were asked for (the worker takes the smallest first)
+    job = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f-") + secrets.token_hex(1)
     tmp = os.path.join(QUEUE, "." + job)          # the worker skips dot-names until complete
     os.makedirs(tmp)
     (shutil.move if "--move" in a else shutil.copyfile)(src, os.path.join(tmp, "video" + ext))
