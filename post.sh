@@ -36,7 +36,26 @@ lead=$(field lead); lead=${lead:-${LEAD:-5}}
 # emulator's camera fails ("camera capture failed") once the file has run out, which
 # a short video would do before the tap. setlog may open the front camera, which
 # mirrors: keep a pre-flipped copy for it.
-ffmpeg -y -loglevel error -nostdin -t 20 -i "$video" -an -vf "setpts=PTS-STARTPTS,fps=30,\
+# setlog will not record a flat picture ("camera capture failed"), and the held first
+# frame is all it sees for those seconds: a video that opens on a blank frame (a fade from
+# white or black) starts at its first frame with something in it instead.
+skip=$("$SETLOG_PYTHON" - "$video" <<'PY'
+import subprocess, sys
+from PIL import Image, ImageStat
+w, h = 32, 18
+raw = subprocess.run(["ffmpeg", "-loglevel", "error", "-nostdin", "-t", "3", "-i", sys.argv[1], "-vf",
+                      f"fps=30,scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True).stdout
+n = w * h
+for i in range(len(raw) // n):
+    if ImageStat.Stat(Image.frombytes("L", (w, h), raw[i * n:(i + 1) * n])).stddev[0] > 4:
+        print(f"{i / 30:.3f}")
+        break
+else:
+    print("0")
+PY
+)
+[ "${skip:-0}" != "0.000" ] && [ "${skip:-0}" != "0" ] && log "the video opens flat: starting at ${skip}s"
+ffmpeg -y -loglevel error -nostdin -ss "${skip:-0}" -t 20 -i "$video" -an -vf "setpts=PTS-STARTPTS,fps=30,\
 scale=1710:962:force_original_aspect_ratio=decrease:flags=lanczos,pad=1710:962:(ow-iw)/2:(oh-ih)/2:color=0x0e0e10,setsar=1,\
 tpad=start_duration=${lead}:start_mode=clone:stop_duration=10:stop_mode=clone,pad=1710:1280:0:0:color=0x0e0e10,format=yuv420p" \
   -c:v libx264 -preset medium -crf 16 -g 15 state/card.next.mp4
